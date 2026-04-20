@@ -41,14 +41,8 @@ _movie/JAV/
 
 ## Requirements
 
-- Bash 4+
+- Bash 3.2+ (tested on macOS 3.2.57 and QNAP 3.2.57; no bash 4 features used)
 - Standard Unix tools: `find`, `sort`, `awk`, `sed`, `stat`, `ln`, `mktemp`
-
-On macOS, install a modern Bash if needed because the system default is often too old:
-
-```bash
-brew install bash
-```
 
 ## Installation
 
@@ -215,8 +209,52 @@ Dry run              : 1
 
 - Symbolic links work across filesystems; hard links do not.
 - Hard links require source and destination to be on the same filesystem.
-- Existing destination files are never overwritten.
+- Existing destination files are never overwritten — including converting mode (symlink → hardlink). To convert, delete the old link first, then re-run with the desired `--hardlink` / `--symlink` flag.
 - Filenames that do not match the parser are skipped and counted as parse failures.
+
+## Converting Existing Symlinks to Hardlinks
+
+The script never overwrites an existing destination entry, so switching modes requires deleting the old links first. Example (hardlink mode on everything that is currently a symlink):
+
+```bash
+# 1. See what will be affected (dry-check)
+find DST -mindepth 2 -maxdepth 2 -type l
+
+# 2. Delete the symlinks (keeps the regular files and orphans intact)
+find DST -mindepth 2 -maxdepth 2 -type l -print -delete
+
+# 3. Re-run in hardlink mode — script recreates the missing entries as hardlinks
+./make_jav_links.sh --hardlink --src /path/to/_index --dst DST
+```
+
+Existing regular files in DST with `nlinks=1` (no counterpart in `_index` anymore) are orphans and must not be deleted blindly; they are standalone data.
+
+## NAS Deployment (QNAP)
+
+On a QNAP NAS with the library at `/share/Multimedia/_archive/_movie/`, run from the archive parent so the script's default relative paths resolve correctly:
+
+```bash
+# Dry-run (preview)
+ssh poring@NAS "cd /share/Multimedia/_archive && bash ./_movie/make_jav_links.sh --dry-run"
+
+# Real run (symlink)
+ssh poring@NAS "cd /share/Multimedia/_archive && bash ./_movie/make_jav_links.sh"
+
+# Real run (hardlink — same filesystem only)
+ssh poring@NAS "cd /share/Multimedia/_archive && bash ./_movie/make_jav_links.sh --hardlink"
+
+# Skip-deleted (honor tombstones from previous snapshot)
+ssh poring@NAS "cd /share/Multimedia/_archive && bash ./_movie/make_jav_links.sh --skip-deleted"
+```
+
+Or use absolute paths from anywhere:
+
+```bash
+bash /share/Multimedia/_archive/_movie/make_jav_links.sh \
+  --src /share/Multimedia/_archive/_movie/_index \
+  --dst /share/Multimedia/_archive/_movie/JAV \
+  --hardlink
+```
 
 ## Repository Contents
 
