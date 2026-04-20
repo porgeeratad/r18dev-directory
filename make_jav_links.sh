@@ -16,6 +16,11 @@ SKIPPED_EXISTS=0
 SKIPPED_PARSE=0
 SKIPPED_NONVIDEO=0
 SKIPPED_DUPLICATE=0
+SKIPPED_TOMBSTONE=0
+
+SNAPSHOT=""
+NO_SNAPSHOT=0
+SKIP_DELETED=0
 
 TAB=$'\t'
 
@@ -31,6 +36,14 @@ Options:
       --symlink     Use symbolic links (default)
       --src DIR     Source root directory (default: $SRC)
       --dst DIR     Destination root directory (default: $DST)
+      --snapshot FILE
+                    Path to snapshot file of destination filenames
+                    (default: DST/.jav_snapshot)
+      --no-snapshot Do not read or write the snapshot file
+      --skip-deleted
+                    Skip creating links for outputs listed in the snapshot
+                    that have since been removed from DST (treat as tombstones
+                    so user-intentional deletions are not reintroduced)
   -h, --help        Show this help message
 
 Examples:
@@ -204,6 +217,19 @@ while [[ $# -gt 0 ]]; do
       DST="$2"
       shift 2
       ;;
+    --snapshot)
+      [[ $# -ge 2 ]] || { echo "error: --snapshot requires a value" >&2; exit 1; }
+      SNAPSHOT="$2"
+      shift 2
+      ;;
+    --no-snapshot)
+      NO_SNAPSHOT=1
+      shift
+      ;;
+    --skip-deleted)
+      SKIP_DELETED=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -245,13 +271,31 @@ fi
 
 DST_ABS="$(abs_path_any "$DST")"
 
+if [[ $NO_SNAPSHOT -eq 0 && -z "$SNAPSHOT" ]]; then
+  SNAPSHOT="$DST_ABS/.jav_snapshot"
+fi
+
 TMP_ALL="$(mktemp)"
 TMP_BEST="$(mktemp)"
+TMP_SNAP=""
+TMP_TOMB=""
 
 cleanup() {
   rm -f "$TMP_ALL" "$TMP_BEST"
+  [[ -n "$TMP_SNAP" ]] && rm -f "$TMP_SNAP"
+  [[ -n "$TMP_TOMB" ]] && rm -f "$TMP_TOMB"
 }
 trap cleanup EXIT
+
+if [[ $SKIP_DELETED -eq 1 && $NO_SNAPSHOT -eq 0 && -n "$SNAPSHOT" && -f "$SNAPSHOT" ]]; then
+  TMP_TOMB="$(mktemp)"
+  while IFS= read -r rel_prev; do
+    [[ -z "$rel_prev" ]] && continue
+    if [[ ! -e "$DST_ABS/$rel_prev" && ! -L "$DST_ABS/$rel_prev" ]]; then
+      printf '%s\n' "$rel_prev" >> "$TMP_TOMB"
+    fi
+  done < "$SNAPSHOT"
+fi
 
 scan_files() {
   if [[ "$DST_ABS" == "$SRC_ABS" || "$DST_ABS" == "$SRC_ABS"/* ]]; then
@@ -302,11 +346,18 @@ if [[ ! -s "$TMP_ALL" ]]; then
   echo "Unique titles        : 0"
   echo "Links created        : 0"
   echo "Skipped (exists)     : 0"
+  echo "Skipped (tombstoned) : 0"
   echo "Skipped (parse fail) : $SKIPPED_PARSE"
   echo "Skipped (non-video)  : $SKIPPED_NONVIDEO"
   echo "Skipped (duplicate)  : 0"
   echo "Link mode            : $LINK_MODE"
   echo "Dry run              : $DRY_RUN"
+  if [[ $NO_SNAPSHOT -eq 1 ]]; then
+    echo "Snapshot             : disabled"
+  else
+    echo "Snapshot file        : $SNAPSHOT"
+    echo "Skip-deleted         : $SKIP_DELETED"
+  fi
   exit 0
 fi
 
@@ -336,6 +387,13 @@ while IFS=$'\t' read -r key size prefix code_tail part ext src_abs; do
     continue
   fi
 
+  rel_out="$prefix/$outname"
+  if [[ -n "$TMP_TOMB" ]] && grep -Fxq -- "$rel_out" "$TMP_TOMB"; then
+    echo "skip (tombstoned, user-deleted): $dst_file"
+    ((SKIPPED_TOMBSTONE+=1))
+    continue
+  fi
+
   if [[ $DRY_RUN -eq 1 ]]; then
     echo "would link: $dst_file -> $src_abs"
     ((LINKED+=1))
@@ -354,6 +412,23 @@ while IFS=$'\t' read -r key size prefix code_tail part ext src_abs; do
   ((LINKED+=1))
 done < "$TMP_BEST"
 
+SNAPSHOT_WRITTEN=0
+if [[ $DRY_RUN -eq 0 && $NO_SNAPSHOT -eq 0 && -n "$SNAPSHOT" ]]; then
+  TMP_SNAP="$(mktemp)"
+  if [[ -d "$DST_ABS" ]]; then
+    ( cd "$DST_ABS" \
+      && find . -mindepth 2 -maxdepth 2 \( -type f -o -type l \) \
+           ! -name '.DS_Store' ! -name '.jav_snapshot' 2>/dev/null \
+      | sed 's|^\./||' ) >> "$TMP_SNAP"
+  fi
+  if [[ -f "$SNAPSHOT" ]]; then
+    cat "$SNAPSHOT" >> "$TMP_SNAP"
+  fi
+  mkdir -p "$(dirname "$SNAPSHOT")"
+  sort -u "$TMP_SNAP" > "$SNAPSHOT"
+  SNAPSHOT_WRITTEN=1
+fi
+
 echo
 echo "Summary"
 echo "-------"
@@ -362,8 +437,16 @@ echo "Candidates           : $CANDIDATES"
 echo "Unique titles        : $UNIQUE_TITLES"
 echo "Links created        : $LINKED"
 echo "Skipped (exists)     : $SKIPPED_EXISTS"
+echo "Skipped (tombstoned) : $SKIPPED_TOMBSTONE"
 echo "Skipped (parse fail) : $SKIPPED_PARSE"
 echo "Skipped (non-video)  : $SKIPPED_NONVIDEO"
 echo "Skipped (duplicate)  : $SKIPPED_DUPLICATE"
 echo "Link mode            : $LINK_MODE"
 echo "Dry run              : $DRY_RUN"
+if [[ $NO_SNAPSHOT -eq 1 ]]; then
+  echo "Snapshot             : disabled"
+else
+  echo "Snapshot file        : $SNAPSHOT"
+  echo "Snapshot written     : $SNAPSHOT_WRITTEN"
+  echo "Skip-deleted         : $SKIP_DELETED"
+fi
