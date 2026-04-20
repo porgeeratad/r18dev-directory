@@ -35,6 +35,8 @@ _movie/JAV/
 - Deduplicates matching titles and keeps the largest source file
 - Ignores non-video files and `.DS_Store`
 - Supports `--dry-run` preview mode
+- Writes a snapshot of destination filenames after each run (for history and tombstoning)
+- Supports `--skip-deleted` so user-deleted outputs are not recreated on future runs
 - Prints a summary report at the end
 
 ## Requirements
@@ -69,6 +71,9 @@ Options:
 - `--symlink`: force symbolic-link mode
 - `--src DIR`: set the source directory
 - `--dst DIR`: set the destination directory
+- `--snapshot FILE`: path to the snapshot file (default: `DST/.jav_snapshot`)
+- `--no-snapshot`: do not read or write the snapshot file
+- `--skip-deleted`: skip creating links for outputs listed in the snapshot that have since been removed from `DST` (treat them as tombstones so user-intentional deletions are not reintroduced)
 - `-h`, `--help`: show help
 
 Examples:
@@ -145,6 +150,19 @@ If the destination directory is inside the source directory, the destination tre
 ## Duplicate Handling
 
 Files that normalize to the same output name are treated as duplicates. The script keeps the largest source file for that title and counts the others as skipped duplicates in the summary.
+
+## Snapshot and Tombstoning
+
+After every real run (not dry-run), the script writes a snapshot of every file currently sitting under `DST/<PREFIX>/<FILE>` to `DST/.jav_snapshot`. The snapshot is additive: entries from the previous snapshot are merged with the current on-disk listing and deduplicated. Snapshot entries are stored as relative paths such as `ABP/ABP-123.mp4`.
+
+With `--skip-deleted`, the script reads the snapshot before linking and builds a tombstone set of entries that are in the snapshot but no longer exist on disk. Any planned output that matches a tombstone is skipped and counted as `Skipped (tombstoned)` in the summary. This lets you delete a link you do not want without having it recreated on the next run.
+
+Related options:
+
+- `--snapshot FILE` uses a custom snapshot path instead of `DST/.jav_snapshot`.
+- `--no-snapshot` disables both reading and writing the snapshot entirely.
+
+The snapshot file itself is excluded from both scanning and snapshotting.
 
 ## Example
 
