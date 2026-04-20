@@ -298,12 +298,25 @@ if [[ $SKIP_DELETED -eq 1 && $NO_SNAPSHOT -eq 0 && -n "$SNAPSHOT" && -f "$SNAPSH
 fi
 
 scan_files() {
+  # Prune hidden system directories that contain preview/thumbnail copies
+  # with the same filename as the real file (QNAP `.@__thumb`, macOS Spotlight,
+  # etc.). Those tiny previews (KB-sized) would otherwise be picked as valid
+  # video sources and link into the library instead of the real movie.
+  local prune=(
+    '(' -type d '(' -name '.@__thumb' -o -name '.@__thumb_*' -o \
+                    -name '@eaDir' -o -name '.AppleDouble' -o \
+                    -name '.Spotlight-V100' -o -name '.Trashes' -o \
+                    -name '.fseventsd' ')' ')' -prune
+  )
   if [[ "$DST_ABS" == "$SRC_ABS" || "$DST_ABS" == "$SRC_ABS"/* ]]; then
     find "$SRC_ABS" \
+      "${prune[@]}" -o \
       \( -path "$DST_ABS" -o -path "$DST_ABS/*" \) -prune -o \
       -type f ! -name '.DS_Store' -print0
   else
-    find "$SRC_ABS" -type f ! -name '.DS_Store' -print0
+    find "$SRC_ABS" \
+      "${prune[@]}" -o \
+      -type f ! -name '.DS_Store' -print0
   fi
 }
 
