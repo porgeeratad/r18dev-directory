@@ -207,6 +207,7 @@ Dry run              : 1
 
 ## Notes
 
+- The script targets bash 3.2+ and uses no bash 4 features, so it runs on the system bash shipped with macOS.
 - Symbolic links work across filesystems; hard links do not.
 - Hard links require source and destination to be on the same filesystem.
 - Existing destination files are never overwritten — including converting mode (symlink → hardlink). To convert, delete the old link first, then re-run with the desired `--hardlink` / `--symlink` flag.
