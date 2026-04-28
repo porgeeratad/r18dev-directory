@@ -287,6 +287,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
+if [[ $SKIP_DELETED -eq 1 && $NO_SNAPSHOT -eq 1 ]]; then
+  echo "warning: --skip-deleted has no effect when --no-snapshot is set (no snapshot to read tombstones from)" >&2
+fi
+
 if [[ $SKIP_DELETED -eq 1 && $NO_SNAPSHOT -eq 0 && -n "$SNAPSHOT" && -f "$SNAPSHOT" ]]; then
   TMP_TOMB="$(mktemp)"
   while IFS= read -r rel_prev; do
