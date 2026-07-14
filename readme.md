@@ -29,6 +29,8 @@ _movie/JAV/
 - Creates symbolic links by default
 - Supports hard-link mode with `--hardlink`
 - Groups output by detected prefix such as `ABP`, `IPX`, `MKBD`, or `SSIS`
+- Strips leading noise before parsing: a `default` token and bracketed resolution tags like `[4K]`, `(FHD)`, `[1080p]`, `[HD]`
+- Recognizes HEYZO filenames (`heyzo_hd_0783`, `s800heyzo_hd_0783`, `HEYZO-0783`) and normalizes every encode variant to `HEYZO-<code>`
 - Normalizes filenames to `PREFIX-CODE.ext` or `PREFIX-CODE - ptN.ext`
 - Detects multipart files from patterns like `CD2`, `part2`, `pt2`, `141_2`, and `141-2`
 - Skips destination files that already exist
@@ -110,6 +112,9 @@ ABP-123 Example Title.mp4
 SSIS001 Another Title.mkv
 XYZ 456 part2.mp4
 default ABP-123 Example Title.mp4
+[4K] SSIS-452 [Miru Sakamichi].mp4
+heyzo_hd_0783_full.mp4
+s800heyzo_hd_0783_full.mp4
 ```
 
 Normalized results:
@@ -126,6 +131,12 @@ ABP-123 Example Title.mp4
 
 XYZ 456 part2.mp4
 -> JAV/XYZ/XYZ-456 - pt2.mp4
+
+[4K] SSIS-452 [Miru Sakamichi].mp4
+-> JAV/SSIS/SSIS-452.mp4
+
+heyzo_hd_0783_full.mp4   (also s800heyzo_…, HEYZO-0783, Heyzo 0783)
+-> JAV/HEYZO/HEYZO-0783.mp4
 ```
 
 ## How Matching Works
