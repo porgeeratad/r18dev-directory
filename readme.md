@@ -39,6 +39,8 @@ _movie/JAV/
 - Supports `--dry-run` preview mode
 - Writes a snapshot of destination filenames after each run (for history and tombstoning)
 - Supports `--skip-deleted` so user-deleted outputs are not recreated on future runs
+- Supports `--prune-tombstones` to clear tombstones so previously-deleted outputs can be recreated again
+- Reports dangling (orphaned) symlinks under `DST` in the summary
 - Prints a summary report at the end
 
 ## Requirements
@@ -70,6 +72,7 @@ Options:
 - `--snapshot FILE`: path to the snapshot file (default: `DST/.jav_snapshot`)
 - `--no-snapshot`: do not read or write the snapshot file
 - `--skip-deleted`: skip creating links for outputs listed in the snapshot that have since been removed from `DST` (treat them as tombstones so user-intentional deletions are not reintroduced)
+- `--prune-tombstones`: drop snapshot entries whose files no longer exist in `DST`, so previously-deleted outputs can be recreated on future runs (opt-in; the default keeps them)
 - `-h`, `--help`: show help
 
 Examples:
@@ -162,12 +165,19 @@ After every real run (not dry-run), the script writes a snapshot of every file c
 
 With `--skip-deleted`, the script reads the snapshot before linking and builds a tombstone set of entries that are in the snapshot but no longer exist on disk. Any planned output that matches a tombstone is skipped and counted as `Skipped (tombstoned)` in the summary. This lets you delete a link you do not want without having it recreated on the next run.
 
+If you later change your mind and want those deleted outputs back, run once with `--prune-tombstones`. This opts out of the forward-merge, so the new snapshot reflects only what currently exists in `DST` — the tombstoned entries drop out and a subsequent run recreates them. (On a run that scans zero candidates the snapshot is left untouched and a warning is printed, since there is nothing to prune against.)
+
 Related options:
 
 - `--snapshot FILE` uses a custom snapshot path instead of `DST/.jav_snapshot`.
 - `--no-snapshot` disables both reading and writing the snapshot entirely.
+- `--prune-tombstones` clears tombstones (see above); opt-in, default keeps them.
 
 The snapshot file itself is excluded from both scanning and snapshotting.
+
+## Orphaned (Dangling) Symlinks
+
+Every run reports an `Orphaned (dangling)` count in the summary — symlinks under `DST/<PREFIX>/<FILE>` whose target no longer exists (for example, a source file that was moved or deleted after the link was created). Each dangling link is also listed to stderr. Detection is read-only (nothing is removed) and runs in both `--dry-run` and `--hardlink` mode; hardlinks cannot dangle, so the count is always `0` there.
 
 ## Example
 
