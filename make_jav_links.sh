@@ -118,19 +118,45 @@ is_video_file() {
 
 strip_leading_noise() {
   local s="$1"
-  # Case-insensitively strip one-or-more leading "default" tokens. Done in pure
-  # bash rather than `sed //I` because BusyBox sed (QNAP) has no case-insensitive
-  # flag — the old form made every "default …" filename fail the parse silently.
-  local lead
+  # Strip leading noise tokens (case-insensitive) so the real title code parses:
+  #   - one-or-more "default" tokens
+  #   - a bracketed/paren resolution tag: [4K] (FHD) [1080p] [HD] ...
+  # Done in pure bash (no `sed //I`) because BusyBox sed (QNAP) has no
+  # case-insensitive flag — the old sed form made every "default …" filename
+  # fail the parse silently. The resolution strip is whitelist-only (glob match
+  # on the bracket's inner token) so a real bracketed prefix like "[MKBD S119]"
+  # is left untouched.
+  local lead close inner
   while :; do
     # trim leading whitespace
     lead="${s%%[![:space:]]*}"
     s="${s#"$lead"}"
+
+    # strip one leading "default" token
     if [[ "$(to_lower "${s:0:7}")" == "default" ]]; then
       s="${s:7}"
-    else
-      break
+      continue
     fi
+
+    # strip one leading resolution/quality tag inside [] or ()
+    case "$s" in
+      "["*"]"*) close="]" ;;
+      "("*")"*) close=")" ;;
+      *)        break ;;
+    esac
+    inner="${s#?}"                 # drop the opening bracket
+    inner="${inner%%"$close"*}"    # keep up to the first closing bracket
+    case "$(to_lower "$inner")" in
+      4k|8k|hd|uhd|fhd|sd|[0-9][0-9][0-9]p|[0-9][0-9][0-9][0-9]p)
+        s="${s#?}"            # opening bracket
+        s="${s#"$inner"}"     # inner token
+        s="${s#"$close"}"     # closing bracket
+        continue
+        ;;
+      *)
+        break
+        ;;
+    esac
   done
   printf '%s' "$s"
 }
@@ -180,6 +206,20 @@ parse_filename() {
   part=""
   code_tail=""
   remainder=""
+
+  # Pattern 0: HEYZO
+  # heyzo_hd_0783 / HEYZO-0783 / s800heyzo_hd_0783 (site-number + quality tag)
+  # All encode variants of a title share the same numeric code, so they collapse
+  # to HEYZO-<code> and the dedup pass keeps the largest source. The `s<digits>`
+  # site prefix and the hd/4k/… quality token are treated as noise. Interval
+  # quantifiers are avoided (BusyBox ERE) — `[0-9][0-9][0-9][0-9]*` means 3+.
+  local lname
+  lname="$(to_lower "$name")"
+  re='^(s[0-9]+)?heyzo[[:space:]_.-]*(hd|4k|fhd|uhd|sd)?[[:space:]_.-]*([0-9][0-9][0-9][0-9]*)'
+  if [[ "$lname" =~ $re ]]; then
+    printf '%s\t%s\t%s\n' "HEYZO" "${BASH_REMATCH[3]}" ""
+    return 0
+  fi
 
   # Pattern 1:
   # (MKBD S130) ...
