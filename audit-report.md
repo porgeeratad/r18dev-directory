@@ -9,6 +9,21 @@ All snapshot integrity checks pass. No high-severity bugs found. Two medium find
 
 ---
 
+## Resolution (2026-07-14)
+
+Bug findings fixed in `make_jav_links.sh` (branch `fix/audit-f01-f02-f03-f05`), verified end-to-end on bash 3.2.57:
+
+| Finding | Status | Fix |
+|---|---|---|
+| F-01 [M] `sed //I` unsupported on BusyBox | ✅ Fixed | `strip_leading_noise` rewritten in pure bash (no `sed //I`); `default …` filenames now parse on QNAP. Tested `default`, `DEFAULT`, `default default` prefixes → 0 parse fails |
+| F-02 [M] `abs_path_any` opaque abort in `--dry-run` | ✅ Fixed | Guarded `cd` in subshell; falls back to best-effort absolute path when parent dir is absent |
+| F-03 [L] Non-atomic snapshot write | ✅ Fixed | Sort into `$SNAPSHOT.tmp.$$` then `mv -f` (atomic); no tombstone loss on partial write |
+| F-05 [L] `stat` runs twice per file | ✅ Fixed | Capture on probe call — one `stat` per file |
+| F-06 [L] Early exit skips snapshot on zero candidates | ⏸️ Accepted | Audit confirmed no data loss; benign edge-case UX. Left as-is |
+| F-04 [L] Vault doc "Bash 4+" drift | ✅ Already resolved | `system/repos/r18dev-file-structure.md` no longer claims Bash 4+ |
+
+---
+
 ## Findings
 
 ### F-01 [M] — `sed //I` case-insensitive flag unsupported on BusyBox sed (QNAP)
