@@ -57,10 +57,20 @@ EOF
 
 abs_path_any() {
   local p="$1"
-  local dir base
+  local dir base abs
   dir="$(dirname "$p")"
   base="$(basename "$p")"
-  echo "$(cd "$dir" && pwd -P)/$base"
+  if abs="$(cd "$dir" 2>/dev/null && pwd -P)"; then
+    echo "$abs/$base"
+  else
+    # Parent dir doesn't exist yet (e.g. --dry-run before the DST tree is
+    # created). Fall back to a best-effort absolute path instead of aborting
+    # the whole script with an opaque `cd: No such file or directory`.
+    case "$p" in
+      /*) printf '%s\n' "$p" ;;
+      *)  printf '%s\n' "$(pwd -P)/$p" ;;
+    esac
+  fi
 }
 
 to_upper() {
@@ -78,11 +88,14 @@ normalize_part_num() {
 
 file_size() {
   local f="$1"
+  local sz
 
-  if stat -c%s "$f" >/dev/null 2>&1; then
-    stat -c%s "$f"
-  elif stat -f%z "$f" >/dev/null 2>&1; then
-    stat -f%z "$f"
+  # Capture on the probe call so we only stat once per file (matters on a NAS
+  # with thousands of candidates). GNU (-c%s) first, then BSD/macOS (-f%z).
+  if sz="$(stat -c%s "$f" 2>/dev/null)"; then
+    printf '%s\n' "$sz"
+  elif sz="$(stat -f%z "$f" 2>/dev/null)"; then
+    printf '%s\n' "$sz"
   else
     wc -c < "$f" | tr -d ' '
   fi
@@ -105,7 +118,20 @@ is_video_file() {
 
 strip_leading_noise() {
   local s="$1"
-  s="$(printf '%s' "$s" | sed -E 's/^[[:space:]]*(default[[:space:]]*)+//I')"
+  # Case-insensitively strip one-or-more leading "default" tokens. Done in pure
+  # bash rather than `sed //I` because BusyBox sed (QNAP) has no case-insensitive
+  # flag — the old form made every "default …" filename fail the parse silently.
+  local lead
+  while :; do
+    # trim leading whitespace
+    lead="${s%%[![:space:]]*}"
+    s="${s#"$lead"}"
+    if [[ "$(to_lower "${s:0:7}")" == "default" ]]; then
+      s="${s:7}"
+    else
+      break
+    fi
+  done
   printf '%s' "$s"
 }
 
@@ -442,7 +468,17 @@ if [[ $DRY_RUN -eq 0 && $NO_SNAPSHOT -eq 0 && -n "$SNAPSHOT" ]]; then
     cat "$SNAPSHOT" >> "$TMP_SNAP"
   fi
   mkdir -p "$(dirname "$SNAPSHOT")"
-  sort -u "$TMP_SNAP" > "$SNAPSHOT"
+  # Atomic write: sort into a sibling temp then rename, so a kill/power-loss
+  # mid-write (more likely on a NAS) can't leave a truncated snapshot that
+  # silently drops a tombstone entry.
+  snap_tmp="$SNAPSHOT.tmp.$$"
+  if sort -u "$TMP_SNAP" > "$snap_tmp"; then
+    mv -f "$snap_tmp" "$SNAPSHOT"
+  else
+    rm -f "$snap_tmp"
+    echo "error: failed to write snapshot $SNAPSHOT" >&2
+    exit 1
+  fi
   SNAPSHOT_WRITTEN=1
 fi
 
