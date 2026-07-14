@@ -195,7 +195,7 @@ detect_part() {
 
 parse_filename() {
   local base="$1"
-  local name prefix token matched part code_tail remainder re
+  local name prefix token matched part code_tail remainder re rem_is_alpha
 
   name="${base%.*}"
   name="$(strip_leading_noise "$name")"
@@ -244,14 +244,25 @@ parse_filename() {
     fi
   fi
 
+  # Computed before the token regex below so this check does not clobber the
+  # BASH_REMATCH we need from the split.
+  remainder="${name#"$matched"}"
+  rem_is_alpha=0
+  [[ "$remainder" =~ ^[A-Za-z] ]] && rem_is_alpha=1
+
   if [[ "$token" =~ ^([A-Za-z]*[0-9]+)[_-]([0-9]+)$ ]]; then
     code_tail="$(to_upper "${BASH_REMATCH[1]}")"
-    part="$(normalize_part_num "${BASH_REMATCH[2]}")"
+    # A trailing _N / -N is a real part only when it is not the leading digit of
+    # a resolution/quality tag. "148_4K", "079-4k60fps", "123_2160p" leave a
+    # letter (K/k/p) in the remainder, meaning that digit is a resolution marker
+    # (4K, 4k60fps, 2160p), not a part number.
+    if [[ $rem_is_alpha -eq 0 ]]; then
+      part="$(normalize_part_num "${BASH_REMATCH[2]}")"
+    fi
   else
     code_tail="$(to_upper "$token")"
   fi
 
-  remainder="${name#"$matched"}"
   if [[ -z "$part" ]]; then
     part="$(detect_part "$remainder" "$code_tail")"
   fi
