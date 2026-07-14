@@ -17,10 +17,12 @@ SKIPPED_PARSE=0
 SKIPPED_NONVIDEO=0
 SKIPPED_DUPLICATE=0
 SKIPPED_TOMBSTONE=0
+ORPHANED=0
 
 SNAPSHOT=""
 NO_SNAPSHOT=0
 SKIP_DELETED=0
+PRUNE_TOMBSTONES=0
 
 TAB=$'\t'
 
@@ -44,6 +46,10 @@ Options:
                     Skip creating links for outputs listed in the snapshot
                     that have since been removed from DST (treat as tombstones
                     so user-intentional deletions are not reintroduced)
+      --prune-tombstones
+                    Drop snapshot entries whose files no longer exist in DST
+                    (clear tombstones) so previously-deleted outputs can be
+                    recreated on future runs. Opt-in; the default keeps them.
   -h, --help        Show this help message
 
 Examples:
@@ -71,6 +77,21 @@ abs_path_any() {
       *)  printf '%s\n' "$(pwd -P)/$p" ;;
     esac
   fi
+}
+
+detect_orphans() {
+  # Count (and list to stderr) dangling symlinks under DST/<PREFIX>/<FILE> —
+  # links whose target no longer exists. Read-only, so it is safe in --dry-run
+  # and in --hardlink mode (where there are simply no symlinks to find).
+  ORPHANED=0
+  [[ -d "$DST_ABS" ]] || return 0
+  local link
+  while IFS= read -r -d '' link; do
+    if [[ -L "$link" && ! -e "$link" ]]; then
+      ((ORPHANED+=1))
+      echo "orphaned (dangling symlink): $link" >&2
+    fi
+  done < <(find "$DST_ABS" -mindepth 2 -maxdepth 2 -type l -print0 2>/dev/null)
 }
 
 to_upper() {
@@ -307,6 +328,10 @@ while [[ $# -gt 0 ]]; do
       SKIP_DELETED=1
       shift
       ;;
+    --prune-tombstones)
+      PRUNE_TOMBSTONES=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -361,11 +386,25 @@ cleanup() {
   rm -f "$TMP_ALL" "$TMP_BEST"
   [[ -n "$TMP_SNAP" ]] && rm -f "$TMP_SNAP"
   [[ -n "$TMP_TOMB" ]] && rm -f "$TMP_TOMB"
+  # Return 0 explicitly: as an EXIT trap, a non-zero status from the last
+  # command here (e.g. the `[[ -n "$TMP_TOMB" ]]` test being false when
+  # --skip-deleted was not used) would otherwise become the script's exit code,
+  # making a fully successful run report failure to callers (e.g. the nas-hub
+  # trigger button that checks the SSH exit status).
+  return 0
 }
 trap cleanup EXIT
 
 if [[ $SKIP_DELETED -eq 1 && $NO_SNAPSHOT -eq 1 ]]; then
   echo "warning: --skip-deleted has no effect when --no-snapshot is set (no snapshot to read tombstones from)" >&2
+fi
+
+if [[ $PRUNE_TOMBSTONES -eq 1 && $NO_SNAPSHOT -eq 1 ]]; then
+  echo "warning: --prune-tombstones has no effect when --no-snapshot is set (no snapshot to prune)" >&2
+fi
+
+if [[ $PRUNE_TOMBSTONES -eq 1 && $SKIP_DELETED -eq 1 && $NO_SNAPSHOT -eq 0 && $DRY_RUN -eq 0 ]]; then
+  echo "warning: --prune-tombstones with --skip-deleted honors tombstones for this run but clears them from the snapshot afterward; a later run would recreate them" >&2
 fi
 
 if [[ $SKIP_DELETED -eq 1 && $NO_SNAPSHOT -eq 0 && -n "$SNAPSHOT" && -f "$SNAPSHOT" ]]; then
@@ -432,6 +471,13 @@ while IFS= read -r -d '' f; do
 done < <(scan_files)
 
 if [[ ! -s "$TMP_ALL" ]]; then
+  detect_orphans
+  # Zero candidates means the snapshot-write block below is never reached, so
+  # --prune-tombstones cannot take effect here. Say so instead of silently
+  # no-op'ing (the snapshot, and any tombstones in it, are left untouched).
+  if [[ $PRUNE_TOMBSTONES -eq 1 && $NO_SNAPSHOT -eq 0 && $DRY_RUN -eq 0 ]]; then
+    echo "warning: --prune-tombstones did nothing: no candidates were scanned, so the snapshot was left untouched (re-run once the source has parseable files)" >&2
+  fi
   echo
   echo "Summary"
   echo "-------"
@@ -444,13 +490,16 @@ if [[ ! -s "$TMP_ALL" ]]; then
   echo "Skipped (parse fail) : $SKIPPED_PARSE"
   echo "Skipped (non-video)  : $SKIPPED_NONVIDEO"
   echo "Skipped (duplicate)  : 0"
+  echo "Orphaned (dangling)  : $ORPHANED"
   echo "Link mode            : $LINK_MODE"
   echo "Dry run              : $DRY_RUN"
   if [[ $NO_SNAPSHOT -eq 1 ]]; then
     echo "Snapshot             : disabled"
   else
     echo "Snapshot file        : $SNAPSHOT"
+    echo "Snapshot written     : 0"
     echo "Skip-deleted         : $SKIP_DELETED"
+    echo "Prune-tombstones     : $PRUNE_TOMBSTONES"
   fi
   exit 0
 fi
@@ -510,12 +559,20 @@ SNAPSHOT_WRITTEN=0
 if [[ $DRY_RUN -eq 0 && $NO_SNAPSHOT -eq 0 && -n "$SNAPSHOT" ]]; then
   TMP_SNAP="$(mktemp)"
   if [[ -d "$DST_ABS" ]]; then
+    # `|| true`: under set -euo pipefail a find error (unreadable subdir, or a
+    # directory removed mid-scan — both plausible on a live NAS) would otherwise
+    # propagate through the pipe and abort the whole run before the atomic write
+    # and summary. Degrade to a possibly-incomplete snapshot instead — the same
+    # tolerance detect_orphans/scan_files get for free from process substitution.
     ( cd "$DST_ABS" \
       && find . -mindepth 2 -maxdepth 2 \( -type f -o -type l \) \
            ! -name '.DS_Store' ! -name '.jav_snapshot' 2>/dev/null \
-      | sed 's|^\./||' ) >> "$TMP_SNAP"
+      | sed 's|^\./||' ) >> "$TMP_SNAP" || true
   fi
-  if [[ -f "$SNAPSHOT" ]]; then
+  # Merge the previous snapshot forward so tombstones (entries whose files were
+  # deleted) persist across runs. --prune-tombstones opts out of the merge, so
+  # the new snapshot reflects only what currently exists in DST.
+  if [[ -f "$SNAPSHOT" && $PRUNE_TOMBSTONES -eq 0 ]]; then
     cat "$SNAPSHOT" >> "$TMP_SNAP"
   fi
   mkdir -p "$(dirname "$SNAPSHOT")"
@@ -533,6 +590,8 @@ if [[ $DRY_RUN -eq 0 && $NO_SNAPSHOT -eq 0 && -n "$SNAPSHOT" ]]; then
   SNAPSHOT_WRITTEN=1
 fi
 
+detect_orphans
+
 echo
 echo "Summary"
 echo "-------"
@@ -545,6 +604,7 @@ echo "Skipped (tombstoned) : $SKIPPED_TOMBSTONE"
 echo "Skipped (parse fail) : $SKIPPED_PARSE"
 echo "Skipped (non-video)  : $SKIPPED_NONVIDEO"
 echo "Skipped (duplicate)  : $SKIPPED_DUPLICATE"
+echo "Orphaned (dangling)  : $ORPHANED"
 echo "Link mode            : $LINK_MODE"
 echo "Dry run              : $DRY_RUN"
 if [[ $NO_SNAPSHOT -eq 1 ]]; then
@@ -553,4 +613,5 @@ else
   echo "Snapshot file        : $SNAPSHOT"
   echo "Snapshot written     : $SNAPSHOT_WRITTEN"
   echo "Skip-deleted         : $SKIP_DELETED"
+  echo "Prune-tombstones     : $PRUNE_TOMBSTONES"
 fi
